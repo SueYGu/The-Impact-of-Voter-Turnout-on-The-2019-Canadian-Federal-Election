@@ -1,0 +1,267 @@
+---
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+```{r}
+#### Preamble ####
+# Purpose: Prepare and clean the survey data downloaded from [...UPDATE ME!!!!!]
+# Author: Yuhan Gu 
+# Data: 2020/12/17
+# Contact: sue.gu@mail.utoronto.ca
+# License: MIT
+# Pre-requisites: 
+# - Need to have downloaded the data from X and save the folder that you're 
+# interested in to inputs/data 
+# - Don't forget to gitignore it!
+library(haven)
+library(tidyverse)
+library(Hmisc)
+library(cesR)
+library(labelled)
+```
+# load data
+```{r}
+# call 2019 CES online survey
+get_ces("ces2019_web")
+# convert values to factor type
+ces2019_web <- to_factor(ces2019_web)
+head(ces2019_web)
+```
+
+```{r}
+# Read census data in the raw data.
+raw_census <- spss.get("pumf-98M0001-E-2016-individuals_F1.sav")
+agelev <- levels(raw_census$AGEGRP)
+census <- raw_census %>% 
+  select(WEIGHT, AGEGRP, MarStH, Sex, DETH123, Citizen, 
+         HDGREE, LFACT, CFInc, PR) %>%
+  filter(Citizen != "Not a Canadian citizen",  #only consider canadian citizen
+         AGEGRP %in% agelev[7:21])  #people >= 18 are eligible to vote
+```
+
+
+
+# Cleaning of survey data
+```{r}
+(ethic_v = colnames(ces2019_web)[200:219])
+survey <- ces2019_web %>%
+  select(cps19_gender, cps19_province, cps19_education,
+         cps19_age, cps19_employment, cps19_citizenship,
+         cps19_votechoice, cps19_income_number, cps19_income_cat,
+         cps19_marital, cps19_weight_general_all, ethic_v)
+eth <- survey[,12:31]
+eth$count = 20 - rowSums(is.na(eth)) # 20 choices in total
+#check if there is any no answer
+sum(eth$count == 0)
+#we assume "everyone voted", so exclude the "Don't know/ Prefer not to answer", and NAs in vote intention 
+#consider citizen in citizenship only, since only these people eligible to vote
+#income has two question, many participants may only answer one of them
+#count the number ethic group participants identified
+survey <- survey %>%
+  mutate(eth_count = eth$count) %>%
+  filter(cps19_citizenship=="Canadian citizen",
+         cps19_votechoice != "Don't know/ Prefer not to answer",
+         cps19_votechoice !="NA's",
+         eth_count != 0)
+```
+
+```{r}
+lev_g = levels(survey$cps19_gender)
+#change gender to sex (treat Other gender as Female)
+#change ethic into single or multiple origin
+#create dummy variables for vote intention on each party choices
+clean_survey <- survey %>%
+  mutate(ethic = as.factor(ifelse(eth_count==1, 
+                                  "Single ethnic origin responses", 
+                                  "Multiple ethnic origin responses")),
+         sex = as.factor(ifelse(cps19_gender %in% lev_g[1], "Male", "Female"))) %>%
+  rename(province = cps19_province, 
+         education = cps19_education, marriage = cps19_marital,
+         age = cps19_age, employment = cps19_employment,
+         weight = cps19_weight_general_all) %>%
+  select(-c(cps19_citizenship, cps19_gender, eth_count, ethic_v))
+#check
+summary(clean_survey$sex)
+summary(as.factor(clean_survey$cps19_votechoice))
+summary(as.factor(clean_survey$Liberal))
+summary(as.factor(clean_survey$Conservative))
+summary(as.factor(clean_survey$ndp))
+summary(as.factor(clean_survey$Bloc))
+summary(as.factor(clean_survey$Green))
+summary(as.factor(clean_survey$People))
+summary(as.factor(clean_survey$Other))
+summary(as.factor(clean_survey$ethic))
+```
+
+# match variable category for two dataset
+```{r}
+(income1 <- levels(census$CFInc))
+(income_l <- levels(survey$cps19_income_cat))
+survey_data <- clean_survey %>%
+  mutate(income_n = case_when(
+    cps19_income_number > 0 & cps19_income_number <= 30000 ~ income_l[2],
+    cps19_income_number > 30000 & cps19_income_number <= 60000 ~ income_l[3],
+    cps19_income_number > 60000 & cps19_income_number <= 90000 ~ income_l[4],
+    cps19_income_number > 90000 & cps19_income_number <= 110000 ~ income_l[5],
+    cps19_income_number > 110000 & cps19_income_number <= 150000 ~ income_l[6],
+    cps19_income_number > 150000 & cps19_income_number <= 200000 ~ income_l[7],
+    cps19_income_number > 200000 ~ income_l[8]))
+survey_data <- survey_data %>%
+  mutate(income = ifelse(is.na(cps19_income_cat),
+                         income_n, as.character(cps19_income_cat)))
+census_data <- census %>%
+  mutate(income  = case_when(
+    CFInc %in% income1[c(1:10)] ~ income_l[2],
+    CFInc %in% income1[c(11:16)] ~ income_l[3],
+    CFInc %in% income1[c(17:22)] ~ income_l[4],
+    CFInc %in% income1[c(23:25)] ~ income_l[5],
+    CFInc %in% income1[c(26:29)] ~ income_l[6],
+    CFInc %in% income1[c(30:31)] ~ income_l[7],
+    CFInc %in% income1[c(32:33)] ~ income_l[8]))
+```
+
+```{r}
+#level of age
+(lev_age <- levels(census$AGEGRP))
+survey_data <- survey_data %>%
+  mutate(age = case_when(age <=19 ~ lev_age[7],
+                         age >19  & age <= 24 ~ lev_age[8],
+                         age >24  & age <= 29 ~ lev_age[9],
+                         age >29  & age <= 34 ~ lev_age[10],
+                         age >34  & age <= 39 ~ lev_age[11],
+                         age >39  & age <= 44 ~ lev_age[12],
+                         age >44  & age <= 49 ~ lev_age[13],
+                         age >49  & age <= 54 ~ lev_age[14],
+                         age >54  & age <= 59 ~ lev_age[15],
+                         age >59  & age <= 64 ~ lev_age[16],
+                         age >64  & age <= 69 ~ lev_age[17],
+                         age >69  & age <= 74 ~ lev_age[18],
+                         age >74  & age <= 79 ~ lev_age[19],
+                         age >79  & age <= 84 ~ lev_age[20],
+                         age >84 ~ lev_age[21]))
+
+summary(as.factor(survey_data$age))
+# level of provience
+levels(census$PR)
+levels(survey$cps19_province)
+Northern_Canada = c("Nunavut", "Yukon","Northwest Territories")
+levels(survey_data$province)[14] <- "Northern Canada"
+survey_data$province[survey_data$province[]%in% Northern_Canada] <- "Northern Canada"
+survey_data$province <- droplevels(survey_data$province)
+summary(survey_data$province)
+```
+
+```{r}
+# consider the status may change largely between employment and unemployment, we consider a person wherther in labor force instead of employment status which may be more stable
+labor1 <- levels(census$LFACT)
+labor2 <- levels(survey$cps19_employment)
+(is_labor <- c(labor1[1:10], labor2[c(1,2,3,5,10,11)]))
+(not_labor <- c(labor1[11:14], labor2[-c(1,2,3,5,10,11)]))
+survey_data <- survey_data %>%
+  mutate(labor = case_when(
+    employment %in% is_labor ~ "Yes",
+    employment %in% not_labor ~ "No"))
+
+census_data <- census_data %>%
+  mutate(labor = case_when(
+    LFACT %in% is_labor ~ "Yes",
+    LFACT %in% not_labor ~ "No"))
+summary(as.factor(survey_data$labor))
+summary(as.factor(census_data$labor))
+```
+
+```{r}
+# level of eduaction
+(edu1 = levels(census$HDGREE))
+(edu2 = levels(survey$cps19_education))
+edu_l = c("No certificate, diploma or degree","No answer",
+          "Secondary/high school level", 
+          "Above secondary and below bachelor level",
+          "Bachelor's degree", "Above Bachelor's degree")
+
+survey_data <- survey_data %>%
+  mutate(education = case_when(
+    education %in% edu2[c(1,2,3,4)] ~ edu_l[1],
+    education %in% edu2[12] ~ edu_l[2],
+    education %in% edu2[5] ~ edu_l[3],
+    education %in% edu2[c(6,7,8)] ~ edu_l[4],
+    education %in% edu2[c(9)] ~ edu_l[5],
+    education %in% edu2[c(10,11)] ~ edu_l[6]))
+
+census_data <- census_data %>%
+  mutate(education  = case_when(
+    HDGREE %in% edu1[1] ~ edu_l[1],
+    HDGREE %in% edu1[14] ~ edu_l[2],
+    HDGREE %in% edu1[2] ~ edu_l[3],
+    HDGREE %in% edu1[c(3:8)] ~ edu_l[4],
+    HDGREE %in% edu1[9] ~ edu_l[5],
+    HDGREE %in% edu1[c(10:13)] ~ edu_l[6]))
+
+summary(as.factor(survey_data$education))
+summary(survey$cps19_education)
+summary(as.factor(census_data$education))
+summary(census$HDGREE)
+```
+```{r}
+(mar_l = levels(survey$cps19_marital))
+(mar1 = levels(census$MarStH))
+census_data <- census_data %>%
+  mutate(marriage  = case_when(
+    MarStH == "Legally married (and not separated)" ~ mar_l[1],
+    MarStH == "Living common law"  ~ mar_l[2],
+    MarStH == "Divorced (and not living common law)" ~ mar_l[3],
+    MarStH == "Separated (and not living common law)"  ~ mar_l[4],
+    MarStH == "Widowed (and not living common law)" ~ mar_l[5],
+    MarStH == "Never legally married (and not living common law)" ~ mar_l[6]))
+summary(as.factor(census_data$marriage))
+summary(census$MarStH)
+```
+
+```{r}
+survey_data <- survey_data %>% 
+  select(-c(cps19_income_number, cps19_income_cat, 
+            income_n, employment, weight)) %>% 
+  mutate(age = as.factor(age), sex=as.factor(sex), 
+         province=as.factor(province), labor=as.factor(labor), 
+         education=as.factor(education), income=as.factor(income))
+
+survey_final <- survey_data %>%
+  filter(income %in% levels(survey_data$income)[c(1:6,8)],
+         marriage != levels(survey_data$marriage)[7]) %>%
+  na.omit()
+
+
+census_final <- census_data %>% 
+  mutate(ethic = as.factor(DETH123), age = as.factor(AGEGRP),
+         sex=as.factor(Sex), province=as.factor(PR),
+         labor=as.factor(labor), marriage = as.factor(marriage),
+         education=as.factor(education), income=as.factor(income)) %>%
+  select(age, sex, province, income, labor, education,
+         marriage, ethic, WEIGHT) %>%
+  na.omit()
+
+census_final$age <- droplevels(census_final$age)
+survey_final$income <- droplevels(survey_final$income)
+survey_final$marriage <- droplevels(survey_final$marriage)
+```
+
+# check the match 
+```{r}
+sort(levels(survey_final$province)) == sort(levels(census_final$province))
+sort(levels(survey_final$age)) == sort(levels(census_final$age))
+sort(levels(survey_final$sex)) == sort(levels(census_final$sex))
+sort(levels(survey_final$labor)) == sort(levels(census_final$labor))
+sort(levels(survey_final$education)) == sort(levels(census_final$education))
+sort(levels(survey_final$income)) == sort(levels(census_final$income))
+sort(levels(survey_final$marriage)) == sort(levels(census_final$marriage))
+```
+
+
+```{r}
+# Saving the survey/sample data as a csv file in my working directory
+write_csv(survey_final, "survey_data.csv")
+write_csv(census_final, "census_data.csv")
+```
+

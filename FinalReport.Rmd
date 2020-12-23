@@ -1,0 +1,483 @@
+---
+title: "The Impact of Voter Turnout on The 2019 Canadian Federal Election"
+author: "Yuhan Gu"
+date: "Dec.21 2020"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+\begin{center} 
+Code and data supporting this analysis is available at github: https://github.com/SueYGu/The-Impact-of-Voter-Turnout-on-The-2019-Canadian-Federal-Election
+\end{center} 
+
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE, message = FALSE)
+library(tidyverse)
+library(knitr)
+library(lme4)
+library(brms)
+library(survey)
+library(tidybayes)
+library(caret)
+library(pROC)
+library(ggpubr)
+```
+# Abstract
+The voter turnout, the percentage of eligible voters who cast a ballot in an election, consider to be important for democracies political. This study is based on the 2019 Canadian Election Study and 2016 Canada Census of Population to investigate the impact of voter turnout on 2019 Canadian Federal Election by the multilevel regression with poststratification method. The results suggest that Voter turnout can have an impact on election results, and for parties with similar voter turnout rates, this could have a decisive impact on the final result. As an important part of democratic politics, citizens' right to vote will affect democratic elections even if it is abandoned.\par
+**Keywords:** 
+*Multilevel regression, Poststratification, Election forecasting, Federal election, Election study, Voter turnout, Opinion polls, Census*
+
+# Introduction
+Voting and elections are the most basic elements of democracy, and statistical analysis is omnipresent to the democratic election. The public opinion on social and political issues inferred from election surveys affect government policymaking, electoral tactics of political parties, and forecast the result of the election in advance. The survey study has the advantages of time and economic costs compared with the census study and reflects real-time views more frequently. Therefore, having the ability to make the inference and forecast the vote intention of the entire population from the sampled population is crucial from both an economical and practical perspective.\par
+One appropriate approach to forecasting election results based on opinion polls is the multilevel regression with poststratification (MRP). MRP was originally developed by Gelman and T.Little (1997) and became widely popular in voter preference estimation in recent years. A series of studies have proved that MRP can adjust unrepresentative samples to better analyze target population opinions and forecast the election result (Wang et al, 2014). In this report, MRP will be used to estimate the result of the 2019 Canadian Federal Election under the condition that if everyone has voted. \par
+Canadian Federal Election is a democratic election that determines the belonging of 338 seats in the House of Commons. There are 338 electoral districts corresponding to seats in the House of Commons, and the boundaries are based on the population identified in the census. The candidate with the highest number of votes in each electoral district wins the corresponding seat in the House of Commons as an elected representative. The leader of the party with the largest number of seats will be asked to be the Prime Minister and form the government normally. In the 2019 federal election, the Liberal won the largest number of seats in the House of Commons (157), but the Conservative won the biggest proportion of the popular vote (34.34%). After the 2019 general election, the voter turnout is once again hotly debated. It has been doubted that the voter turnout in this election, which is 67%, is not representative enough of all citizens, the increase of voter turnout may result in different election results. Thus, this study will analyze the potential outcomes of the 2019 Canadian Federal Election with 100 percent voter turnout and identify the difference contributed by voter turnout. \par
+The 2019 Canadian Election Study (Stephenson, L. et al., 2020) and 2016 Canada Census of Population (Statistics Canada, 2019) are two data sets that will be used to investigate how MRP could use to estimate the outcome of election and inference the impact of voter turnout by comparing the estimated result with the actual results of the election. The details of data will be displayed in the Data section, the usage of MRP will be explained in the Model section, and results of MRP analysis are provided in the Result section. The inferences of this study along with conclusions and weaknesses are presented in the Discussion section. \par
+
+
+# Data
+## 1.Canadian Election Study (CES)
+This study is based on 2019 Campaign Period Survey (CPS) data conducted by the team of Canadian Election Study. The *target population* of CES is the general Canadian citizen and permanent resident over 18 years of age, the *frame population* is the proportion of the target population that access to CES online survey; hence the *sample population* is the 37822 valid respondents collected by CES team through Qualtrics within campaign period of 2019 election \footnote{Campaign Period Survey (CPS): 2019 Sept. 13 to 2019 Oct. 21}(Stephenson, L. et al., 2020). \par
+
+CES is a study focusing on Canadian public preference in political attitudes with a long history. The online questionnaire includes problems with general demographic variables and preferences in various political and social issues. The advantage of this data set is that it contains 620 variables with the scope of participants' demographic information, political opinions, and voting intentions. Meanwhile, the disadvantage is that these data are not collected by random selection, so the sample population is not sufficiently representative. \par
+
+## 2.Canada Census of Population (Census 2016)
+Another dataset used in this study, the 2016 Census public use microdata file (PUMF), is collected by Statistic Canada via paper questionnaire and online questionnaire. The *target population* of Census is the Canadian general population, the *frame population* is the proportion of the target population that access to either online or paper census survey; hence the *sample population* is the 930,421 individuals records in the PUMF. \par
+
+
+```{r data,echo=F, include=F}
+# Loading in the cleaned survey Data
+survey_data <- read_csv("survey_data.csv")
+# Loading in the cleaned census Data
+census_data <- read_csv("census_data.csv")
+# change data type
+col_names1 <- colnames(survey_data)
+survey_data[,col_names1] <- lapply(survey_data[,col_names1], as.factor)
+col_names2 <- colnames(census_data[-9])
+census_data[,col_names2] <- lapply(census_data[,col_names2], as.factor)
+# check
+summary(survey_data)
+summary(census_data)
+```
+
+```{r vote variable divide, echo=F, include=F}
+(lev_v = levels(survey_data$cps19_votechoice))
+#create dummy variables for vote intention on each party choices
+#consider Another party, People's party, Bloc quebec as "Others" since their sum<2000
+survey_data <- survey_data %>%
+  mutate(Liberal = as.factor(ifelse(cps19_votechoice==lev_v[5],1,0)),
+         Conservative = as.factor(ifelse(cps19_votechoice==lev_v[3],1,0)),
+         ndp = as.factor(ifelse(cps19_votechoice==lev_v[6],1,0)),
+         Bloc = as.factor(ifelse(cps19_votechoice==lev_v[2],1,0)),
+         Others = as.factor(ifelse(cps19_votechoice %in% lev_v[c(1,4,7)],1,0)))
+summary(survey_data)
+```
+
+```{r cell create, echo=F, include=F}
+# create cell in data by sex and ethic
+survey_data$cell <- paste(survey_data$sex, survey_data$age)
+census_data$cell <- paste(census_data$sex, census_data$age)
+sort(unique(survey_data$cell)) == sort(unique(census_data$cell)) #30 cells
+```
+
+```{r echo=F, include=F}
+age_data <- rbind(survey_data %>% group_by(age) %>%
+                    summarise(frequence = n()/nrow(survey_data)*100, type="survey"), 
+                  census_data %>% group_by(age) %>%
+                    summarise(frequence = n()/nrow(census_data)*100, type="census"))
+sex_data <- rbind(survey_data %>% group_by(sex) %>%
+                    summarise(frequence = n()/nrow(survey_data)*100, type="survey"), 
+                  census_data %>% group_by(sex) %>%
+                    summarise(frequence = n()/nrow(census_data)*100, type="census"))
+ethic_data <- rbind(survey_data %>% group_by(ethic) %>%
+                    summarise(frequence = n()/nrow(survey_data)*100, type="survey"), 
+                  census_data %>% group_by(ethic) %>%
+                    summarise(frequence = n()/nrow(census_data)*100, type="census"))
+education_data <- rbind(survey_data %>% group_by(education) %>%
+                    summarise(frequence = n()/nrow(survey_data)*100, type="survey"), 
+                  census_data %>% group_by(education) %>%
+                    summarise(frequence = n()/nrow(census_data)*100, type="census"))
+labor_data <- rbind(survey_data %>% group_by(labor) %>%
+                    summarise(frequence = n()/nrow(survey_data)*100, type="survey"), 
+                  census_data %>% group_by(labor) %>%
+                    summarise(frequence = n()/nrow(census_data)*100, type="census"))
+income_data <- rbind(survey_data %>% group_by(income) %>% 
+                    summarise(frequence = n()/nrow(survey_data)*100, type="survey"), 
+                  census_data %>% group_by(income) %>%
+                    summarise(frequence = n()/nrow(census_data)*100, type="census"))
+marriage_data <- rbind(survey_data %>% group_by(marriage) %>%
+                    summarise(frequence = n()/nrow(survey_data)*100, type="survey"), 
+                  census_data %>% group_by(marriage) %>%
+                    summarise(frequence = n()/nrow(census_data)*100, type="census"))
+province_data <- rbind(survey_data %>% group_by(province) %>%
+                    summarise(frequence = n()/nrow(survey_data)*100, type="survey"), 
+                  census_data %>% group_by(province) %>%
+                    summarise(frequence = n()/nrow(census_data)*100, type="census"))
+# show all varibale
+age <- ggplot(age_data, aes(x=age, y=frequence, group = type, color = type)) +
+  geom_line() +theme(legend.position="none") + 
+  scale_x_discrete(labels=c("18 to 19 years"="18", "20 to 24 years"="20",
+                            "25 to 29 years"="25", "30 to 34 years"="30", 
+                            "35 to 39 years"="35", "40 to 44 years"="40",
+                            "45 to 49 years"="45", "50 to 54 years"="50", 
+                            "55 to 59 years"="55", "60 to 64 years"="60", 
+                            "65 to 69 years"="65", "70 to 74 years"="70",
+                            "75 to 79 years"="75", "80 to 84 years"="80", 
+                            "85 years and over"=">=85"))
+sex <- ggplot(sex_data, aes(x=sex, y=frequence, group = type, color = type)) +
+  geom_line() +theme(legend.position="none")
+labor <- ggplot(labor_data, aes(x=labor, y=frequence, group = type, color = type)) +
+  geom_line() 
+ethic <- ggplot(ethic_data, aes(x=ethic, y=frequence, group = type, color = type)) +
+  geom_line() +theme(legend.position="none") + 
+  scale_x_discrete(labels=c("Multiple ethnic origin responses" = "Multiple", 
+                            "Single ethnic origin responses" = "Single"))
+income <- ggplot(income_data, aes(x=income, y=frequence, 
+                                  group = type, color = type)) +
+  geom_line() +theme(legend.position="none", axis.text.x=element_blank())
+marriage <- ggplot(marriage_data, aes(x=marriage, y=frequence, 
+                                      group = type, color = type)) +
+  geom_line() +theme(legend.position="none", axis.text.x=element_blank())
+education <- ggplot(education_data, aes(x=education, y=frequence, 
+                                        group = type, color = type)) +
+  geom_line() +theme(legend.position="none", axis.text.x=element_blank())
+province <- ggplot(province_data, aes(x=province, y=frequence, 
+                                      group = type, color = type)) +
+  geom_line() +theme(legend.position="none", axis.text.x=element_blank())
+
+```
+
+```{r plot1, echo=FALSE}
+plot1 <- ggarrange(ggarrange(sex, ethic, labor, ncol=3), 
+                   ggarrange(education, marriage,  ncol=2),
+                   ggarrange(income, province,ncol=2), age, nrow=4)
+annotate_figure(plot1, 
+                top = text_grob("Figure 1: Survey data (CES) vs. Census data (PUMF)"))
+```
+The appropriateness of using Census PUMF in this study is that it contains 2.7% of the Canadian population and gives weights to each sample. The data set contains a total of 123 variables, of which 95 (75%) are variables at the individual level, which are conducive to the analysis of individual voting intension. Unfortunately, this data set does not contain variables for political views or electoral districts, so voting can only be predicted based on demographic, educational, and economic variables, and projections cannot be detailed to each constituency. On the other hand, census data is for 2016, and the general election is for 2019. The analysis was based on the assumption that Canada's population distribution did not change much over the three years. \par
+
+CES and Census PUMF are very detailed in terms of information gathering, and the same information can be represented by multiple variables under different headings. Below is a comparison graph of the distribution of the CES and Census data (Figure 1).  CES and Census PUMF has similar distribution overall, while the sex distribution exhibit considerable differences. \par
+
+After close inspection and selection, there are seven variables were selected to be the predictive variables of interest: *sex*, *age*, *ethic*\footnote{A binary variable: Single ethnic origin responses or Multiple ethnic origin responses}, *labor*\footnote{A binary variable: Is labor force or not}, *income*\footnote{For CES data, variable income is derived from the combination of two variables: cps19 income number, cps19 income cat}, *marriage*, *education*, and *province*\footnote{The three province: Nunavut, Yukon, Northwest Territories, record as Northern Canada}. The sex variable in Census data is binary, while CES has a third option: “other”. A reasonable treatment would be imputing the “other” gender as “Female” given the similar degree of oppression they receive (Kennedy et al, 2020). The vote choice variable in CES indicates all available choice for voters. The purpose of this study was to analyze the election result when each person voted, so the participants who chose “Don't know/ Prefer not to answer” or no response in vote choice were excluded. \par
+Furthermore, Canadian citizens over 18 have the right to vote in general elections (Government of Canada, 2019), so the participants under 18 years old or not Canadian citizen (e.g. Permanent residence) in two datasets were excluded. In addition, the NA values in 7 predictors eliminated for analyze. Thus, the valid observations for this study were 23,264 in CES, and 647,304 in Census. \par
+
+# Methodology
+The multilevel regression with poststratification (MRP) is conducted in this study to predict the election results. The survey data was partitioned into 30 cells, with each cell representing an interaction variable of *sex* and *age*, to correct the known difference between CES and census data. Since several political parties received a considerable proportion of votes in the 2019 Canadian general election, five nested multilevel logistic regression fitted for estimating support for 5 vote choice (Liberal, Conservative, Bloc Québécois, New Democratic, and other parties \footnote{For example: Green Party, People’s Party}) in each cell to obtain a comprehensive result. \par
+## Model Specifics
+The five models have the same format, as follows:
+\[
+ Pr(Y_i \in{vote^{k}_{yes}, vote^k_{no}}) =  logit^{-1}({a_h + a^{ethic}_{j[i]} 
+ + a^{labor}_{j[i]} + a^{income}_{j[i]} + a^{marriage}_{j[i]} 
+ + a^{education}_{j[i]} + a^{provience}_{j[i]}})
+\]
+Where $a_h$ is a random intercept representing the respondent's voting tendency impact from individual cell membership. The expressions $a^{ethic}_{j[i]}$, $a^{labor}_{j[i]}$,  $a^{income}_{j[i]}$, $a^{marriage}_{j[i]}$, $a^{education}_{j[i]}$, and $a^{provience}_{j[i]}$ corresponding to the coefficients for each level of categorical variables. The footnote j[i] represents the cell membership of the $i^{th}$ respondent. k $\in$ {Liberal, Conservative, Bloc Québécois, New Democratic, other parties}. In other words, the response of the five models is whether vote party k or not correspondingly. \par
+The approximate marginal maximum likelihood estimates (MLE) of models are obtained from glmer() function in R packages lme4 run through R studio (Bates, Maechler, Bolker & Walker, 2015). The performance of each model is measured by Area Under the ROC Curve (“AUC”). \par
+
+
+## Post-Stratification 
+Post-stratification is an effective technique to adjust the imbalance of representatives of the sample (Reilly, Gelman, & Katz, 2001). The implementation of poststratification is to estimate the response variable in each cell and aggregate the cell-level estimation to population-level by the relative proportion of each cell in the population. \par
+
+The calculation of the post-stratified proportions of voters voting for each party: 
+\[
+\widehat{y}^{PS} = \frac{\sum ^J \limits_{j=1}N_j \widehat{y_j}}{\sum ^J \limits_{j=1}N_j}
+\]
+Where $\widehat{y}$ is the the estimated voting proportion for whether vote k party, $N$ is the weight, and j indicates the $j_{th}$ cell (J=30).\par
+The basic step is to calculate the individual level of voting probability for each party, and the party with the highest probability win. In this study, we will calculate the popular vote share of each party and estimate the number of Seats in the House of Commons won by each party based on the number of electoral districts in each province.\par
+```{r models, echo=F, include=F}
+## Random Intercept Model - Logistic Regression
+#Liberal model
+t1s <- Sys.time()
+m1 <- glmer(Liberal ~ (1|cell)  + ethic + labor + income + 
+                     marriage + education +  province,
+             family=binomial, data = survey_data)
+t1e <- Sys.time()
+#Conservative model
+t2s <- Sys.time()
+m2 <- glmer(Conservative ~ (1|cell)  + ethic + labor + income + 
+                     marriage + education +  province,
+             family=binomial, data = survey_data)
+t2e <- Sys.time()
+#ndp model
+t3s <- Sys.time()
+m3 <- glmer(ndp ~ (1|cell)  + ethic + labor + income + 
+                     marriage + education +  province,
+             family=binomial, data = survey_data)
+t3e <- Sys.time()
+#Bloc model
+t4s <- Sys.time()
+m4 <- glmer(Bloc ~ (1|cell)  + ethic + labor + income + 
+                     marriage + education +  province,
+             family=binomial, data = survey_data)
+t4e <- Sys.time()
+#Others model
+t5s <- Sys.time()
+m5 <- glmer(Others ~ (1|cell)  + ethic + labor + income + 
+                     marriage + education +  province,
+             family=binomial, data = survey_data)
+t5e <- Sys.time()
+```
+```{r ROC curve, echo=F, include=F}
+#ROC curve
+roc_p1 <- predict(m1, type = "response")
+roc_p2 <- predict(m2, type = "response")
+roc_p3 <- predict(m3, type = "response")
+roc_p4 <- predict(m4, type = "response")
+roc_p5 <- predict(m5, type = "response")
+roc_l1 <- roc(survey_data$Liberal ~ roc_p1)
+roc_l2 <- roc(survey_data$Conservative ~ roc_p2)
+roc_l3 <- roc(survey_data$ndp ~ roc_p3)
+roc_l4 <- roc(survey_data$Bloc ~ roc_p4)
+roc_l5 <- roc(survey_data$Others ~ roc_p5)
+## Setting levels: control = 0, case = 1
+## Setting direction: controls < cases
+## The True Positive Rate ##
+TPR1 <- roc_l1$sensitivities
+TPR2 <- roc_l2$sensitivities
+TPR3 <- roc_l3$sensitivities
+TPR4 <- roc_l4$sensitivities
+TPR5 <- roc_l5$sensitivities
+## The False Positive Rate ##
+roc1 <- data.frame(FPR = 1 - roc_l1$specificities, TPR = roc_l1$sensitivities, party="Liberal")
+roc2 <- data.frame(FPR = 1 - roc_l2$specificities, TPR = roc_l2$sensitivities, party="Conservative")
+roc3 <- data.frame(FPR = 1 - roc_l3$specificities, TPR = roc_l3$sensitivities, party="Ndp")
+roc4 <- data.frame(FPR = 1 - roc_l4$specificities, TPR = roc_l4$sensitivities, party="Bloc")
+roc5 <- data.frame(FPR = 1 - roc_l5$specificities, TPR = roc_l5$sensitivities, party="Others")
+
+roc <- rbind(roc1,roc2,roc3,roc4,roc5)
+#ROC curve
+ROC <- ggplot(roc, aes(FPR,TPR)) + 
+  geom_line(aes(color = party)) +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), linetype="dashed") +
+  labs(title = "Figure 2: ROC Curve",
+    x = "False Positive Rate (1-Specificity)", 
+    y = "True Positive Rate (Sensitivity)") +
+  annotate("text", x = 0.75, y = 0.5, vjust = 0, 
+           label = paste("AUC(Liberal) =",round(auc(roc_l1),2))) +
+  annotate("text", x = 0.75, y = 0.4, vjust = 0, 
+           label = paste("AUC(Conservative) =",round(auc(roc_l2),2))) +
+  annotate("text", x = 0.75, y = 0.3, vjust = 0, 
+           label = paste("AUC(Ndp) =",round(auc(roc_l3),2))) +
+  annotate("text", x = 0.75, y = 0.2, vjust = 0, 
+           label = paste("AUC(Bloc) =",round(auc(roc_l4),2))) +
+  annotate("text", x = 0.75, y = 0.1, vjust = 0, 
+           label = paste("AUC(Others) =",round(auc(roc_l5),2)))
+```
+
+
+# Results
+As shown in Figure 2, the Area Under the ROC Curve (“AUC”) is 0.63, 0.71, 0.69, 0.94, and 0.63 correspond to the model of whether vote party Liberal, Conservative, Bloc Québécois, New Democratic, and other parties. That is, the models are relatively effective in distinguishing the voter intention, especially the one of whether vote Bloc Québécois party (AUC=0.94). All predictors are significant (p-value < 0.05), and the estimated coefficients of each model are provided in the appendix.\par
+
+```{r echo=F}
+ROC
+```
+
+```{r Post-Stratification,echo=F, include=F}
+#Post-Stratification
+#calculate the probability that each person will vote
+census_data$Liberal <-
+  predict(m1,census_data[,c("labor","cell","ethic","income","marriage", 
+                            "education", "province")],type="response")
+census_data$Conservative <-
+  predict(m2,census_data[,c("labor","cell","ethic","income","marriage", 
+                            "education", "province")],type="response")
+census_data$Ndp <-
+  predict(m3,census_data[,c("labor","cell","ethic","income","marriage", 
+                            "education", "province")],type="response")
+census_data$Bloc <-
+  predict(m4,census_data[,c("labor","cell","ethic","income","marriage", 
+                            "education", "province")],type="response")
+census_data$Others <-
+  predict(m5,census_data[,c("labor","cell","ethic","income","marriage", 
+                            "education", "province")],type="response")
+
+#calculate the max odds of vote in each person
+census_data$vote_pred_2019 <- as.factor(colnames(census_data)[c(11:15)][apply(census_data[,c(11:15)],1,which.max)])
+summary(census_data$vote_pred_2019)
+#count vote based on person weight (representative of this person) in census data
+pred_result <- census_data %>% 
+  mutate(vote_Liberal = ifelse(vote_pred_2019=="Liberal",WEIGHT, 0),
+         vote_Conservative = ifelse(vote_pred_2019=="Conservative", WEIGHT, 0),
+         vote_ndp = ifelse(vote_pred_2019=="Ndp", WEIGHT, 0),
+         vote_Bloc = ifelse(vote_pred_2019=="Bloc", WEIGHT, 0),
+         vote_Others = ifelse(vote_pred_2019=="Others", WEIGHT, 0))
+
+# vote in ppopulation
+total = sum(census_data$WEIGHT)
+pred_result %>% summarise(Liberal=sum(vote_Liberal)/total*100,
+                          Conservative=sum(vote_Conservative)/total*100, 
+                          ndp=sum(vote_ndp)/total*100,
+                          Bloc=sum(vote_Bloc)/total*100, 
+                          Others=sum(vote_Others)/total*100)
+```
+
+```{r provience, echo=F, include=F}
+#calculate place by province
+#Mutate electoral votes per state according to the Canadian election
+#each state has different counts
+#north 3, BC 11+11+17+2+1, AB: 33+1, SK: 14, MB:4+7+3, ON: 79+36+6, QC: 35+10+32+1, NB:6+3+1, NS: 10+1, PE: 4, NL:6+1
+#total vote of each state
+result <- pred_result %>% group_by(province) %>%
+  summarise(Liberal=sum(vote_Liberal)/sum(WEIGHT),
+            Conservative=sum(vote_Conservative)/sum(WEIGHT),
+            ndp=sum(vote_ndp)/sum(WEIGHT),
+            Bloc=sum(vote_Bloc)/sum(WEIGHT), 
+            Others=sum(vote_Others)/sum(WEIGHT))
+result_num <- result %>%
+  mutate(place_num = case_when(
+    province=="Alberta"~34, province=="British Columbia"~42,
+    province=="Manitoba"~14, province=="New Brunswick"~10, 
+    province=="Newfoundland and Labrador"~7, province=="Northern Canada"~3,
+    province=="Nova Scotia"~11, province=="Ontario"~121,
+    province=="Prince Edward Island"~4, province=="Quebec"~78,
+    province=="Saskatchewan"~14)) 
+
+prov <- result_num %>% mutate(Liberal_n = Liberal*place_num,
+            Conservative_n = Conservative*place_num,
+            ndp_n = ndp*place_num,
+            Bloc_n = Bloc*place_num, 
+            Others_n = Others*place_num) %>%
+  select(province, Liberal_n, Conservative_n, ndp_n, Bloc_n, Others_n)
+```
+
+```{r fig3, echo=F}
+result$Province <- c("AB", "BC", "MN", "NB", "NL","NC","NS","ON","PE","QC","SK")
+
+prov_l<- ggplot(data=result, aes(x=Province, y=Liberal)) +
+  geom_bar(stat="identity", position=position_dodge(),fill="red")
+
+prov_c<- ggplot(data=result, aes(x=Province, y=Conservative)) +
+  geom_bar(stat="identity", position=position_dodge(), fill="steelblue") 
+
+prov_n<- ggplot(data=result, aes(x=Province, y=ndp)) +
+  geom_bar(stat="identity", position=position_dodge(),fill="orange") 
+
+prov_b<- ggplot(data=result[c(10:12),], aes(x=Province, y=Bloc)) +
+  geom_bar(stat="identity", position=position_dodge(),fill="skyblue") 
+
+prov_o<- ggplot(data=result[-c(1,3,5,8,10,11),], aes(x=Province, y=Others)) +
+  geom_bar(stat="identity", position=position_dodge(),fill="springgreen3") +
+  labs(title = "vote for Others")
+plot3 <- ggarrange(prov_l,prov_c,nrow = 2)
+annotate_figure(plot3, 
+                top = text_grob("Figure 3: Vote for Liberal and Conservative"))
+plot4 <- ggarrange(prov_n, ggarrange(prov_b, prov_o),nrow = 2)
+annotate_figure(plot4, 
+                top = text_grob("Figure 4: Vote for Ndp, Bloc, and Others"))
+```
+
+
+The proportion of the popular vote going from high to low is Liberal (45.86%), Conservative (42.69%), Bloc Québécois (6.15%), New Democratic (5.04%), and other parties (0.26%). Figure 3 and 4 shows the proportion of support for each party in each province and the estimated number of seats won. Party support varies significantly in each province shown by both estimated coefficients and forecasts results. The actual results of the 2019 general election and the estimated results from this study are shown in Table 1.\par
+
+
+```{r tab1, echo=F}
+true_pred <- cbind(party=c("Liberal", "Conservative", "New Democratic", 
+                        "Bloc Québécois", "Others"),
+                Porportion_2019=c(33.12,34.34,15.98,7.63,8.17),
+                Seats_2019 = c(157,121,24,32,3),
+                Porportion_p=c(round(sum(pred_result$vote_Liberal)/total*100,2),
+                               round(sum(pred_result$vote_Conservativen)/total*100,2),
+                               round(sum(pred_result$vote_ndp)/total*100,2),
+                               round(sum(pred_result$vote_Bloc)/total*100,2),
+                               round(sum(pred_result$vote_Others)/total*100,2)),
+                Seats_p = c(round(sum(prov$Liberal_n),2), 
+                            round(sum(prov$Conservativen_n),2),
+                            round(sum(prov$ndp_n),2), round(sum(prov$Bloc_n),2),
+                            round(sum(prov$Others_n),2)))
+kable(true_pred, caption = "2019 Federal Election results: Observation vs. Estimation")
+```
+
+
+
+# Discussion
+## Conclusion
+This study uses data based on CES 2019 and 2016 Canadian Census PUMF to predict the potential outcome of the 2019 election if the voter turnout is 100 percent.  Multilevel regression gives valid and predictable models. The overall result shows a sharp drop in support of the minority parties and notable shifts in support for the Liberal and Conservative parties.  \par
+As table 1 shows, in the 2019 general election, the Conservative Popular Vote was higher than the Liberal Party (about 1%), which became the governing party by winning more seats in the House of Commons (157-121=36). Our projections show that the Liberals are three percentage point ahead of the Conservatives' Popular vote on a 100 percent turnout, but the total seats won by the Liberals are 144 to 132 won by the Conservatives. On the other hand, supporters of some parties have distinct regional characteristics. As figure 4 shows, most of Bloc Québécois's supporters are in Quebec. Almost all the provinces of Alberta and Saskatchewa were Conservative voters, while Newfoundland and Labrador, Nova Scotia tended to vote Liberal. These tendencies did not change with the improvement in voter turnout. As a result, the shift in the centrist vote influenced by voter turnout is the focus.\par
+Such results suggest that different voter turnouts can lead to different election results, especially when there is no significant difference between support among the two majority parties. In other words, voter participation has a considerable impact on the outcome of the democratic election. Whether to exercise the right to vote is a crucial part of democracy. \par
+## Weaknesses
+In the post-stratified process, the final number of seats for each party is calculated based on provincial regions, when in fact the seats of the House Commons are dependent on 338 electoral districts. Unfortunately, Census data does not include the variable of electoral districts, so the forecast of seats is not consistent with Canada's actual electoral system. Such differences can lead to inaccurate predictions on seat belonging. Moreover, the census was conducted in 2016, and changes in the population distribution over a 3-year interval would also affect the results. \par
+Besides, respondents of CES survey who have not yet decided on their voting intentions or do not currently have voting intentions (i.e., do not know, and their voting intentions are Vote_2020) are excluded from our model. Although this study seeks a theoretical 100 percent turnout, in practice, the voting intentions of this group are still ambiguous. Uncertainty about the outcome of the forecast has therefore increased. \par
+## Next Steps
+The follow-up investigations will be conducted in the future. A new Canadian census study was processing in 2020, and when the new census data is released, the analysis of whether there has been a significant change in the distribution of the population is available. Furthermore, explore or build population data sets with electoral Districts variable for more accurate analysis and forecasting. \par
+
+\newpage
+# References
+1. Alboukadel Kassambara (2020). ggpubr: 'ggplot2' Based Publication Ready
+  Plots. R package version 0.4.0. https://CRAN.R-project.org/package=ggpubr
+
+2. Canada, S. (2020, December 15). Government of Canada. Retrieved from https://www.canada.ca/en.html
+
+3. Douglas Bates, Martin Maechler, Ben Bolker, Steve Walker (2015). Fitting
+  Linear Mixed-Effects Models Using lme4. Journal of Statistical Software,
+  67(1), 1-48. doi:10.18637/jss.v067.i01.
+  
+4. Elections Canada. (1970, September 01). Retrieved December 22, 2020, from https://www.elections.ca/home.aspx
+
+5. Gelman, A., & Little, T. (1997, December 15). Postratification into many categories using hierarchical logistic regression. Retrieved December 09, 2020, from https://www150.statcan.gc.ca/n1/en/catalogue/12-001-2X19970023616
+
+6. H. Wickham. ggplot2: Elegant Graphics for Data Analysis. Springer-Verlag New York, 2016.
+
+7. Hao Zhu (2020). kableExtra: Construct Complex Table with 'kable' and Pipe
+  Syntax. R package version 1.2.1.
+  https://CRAN.R-project.org/package=kableExtra
+
+8. Lauren Kennedy, Katharine Khanna, Daniel Simpson, & Andrew Gelman. (2020). Using sex and gender in survey adjustment.
+
+9. Kay M (2020). _tidybayes: Tidy Data and Geoms for Bayesian Models_. doi:
+10.5281/zenodo.1308151 (URL: https://doi.org/10.5281/zenodo.1308151), R
+package version 2.1.1, <URL: http://mjskay.github.io/tidybayes/>.
+
+10. Max Kuhn (2020). caret: Classification and Regression Training. R package
+  version 6.0-86. https://CRAN.R-project.org/package=caret
+
+11. Paul-Christian Bürkner (2018). Advanced Bayesian Multilevel Modeling with
+  the R Package brms. The R Journal, 10(1), 395-411. doi:10.32614/RJ-2018-017
+
+12. Statistics Canada. 2019. 2016 Census of Population [Canada] Public Use Microdata File (PUMF): Individuals File [public use microdata file]. Ottawa, Ontario: Statistics Canada [producer and distributor].
+
+13. Stephenson, Laura B; Harell, Allison; Rubenson, Daniel; Loewen, Peter John, 2020, '2019 Canadian Election Study - Online Survey', https://doi.org/10.7910/DVN/DUS88V, Harvard Dataverse, V1
+
+14. Stephenson, Laura, Allison Harrel, Daniel Rubenson and Peter Loewen. Forthcoming. 'Measuring Preferences and Behaviour in the 2019 Canadian Election Study,' Canadian Journal of Political Science.
+
+15. T. Lumley (2020) "survey: analysis of complex survey samples". R package
+  version 4.0.
+
+16. Wang, W., Rothschild, D., Goel, S., & Gelman, A. (2014, June 01). Forecasting elections
+with non-representative polls (Rep.). doi:https://www.sciencedirect.com/science/article/abs/pii/S0169207014000879?via%3Dihub
+
+17. Wickham et al., (2019). Welcome to the tidyverse. Journal of Open Source
+  Software, 4(43), 1686, https://doi.org/10.21105/joss.01686
+
+18. Xavier Robin, Natacha Turck, Alexandre Hainard, Natalia Tiberti, Frédérique
+  Lisacek, Jean-Charles Sanchez and Markus Müller (2011). pROC: an open-source
+  package for R and S+ to analyze and compare ROC curves. BMC Bioinformatics,
+  12, p. 77.  DOI: 10.1186/1471-2105-12-77
+  <http://www.biomedcentral.com/1471-2105/12/77/>
+
+19. Yihui Xie (2020). knitr: A General-Purpose Package for Dynamic Report
+  Generation in R. R package version 1.29.
+  
+20. Reilly, C., Gelman, A., & Katz, J. (2001). Poststratification Without Population Level Information on the Postratifying Variable, With Application to Political Polling. Journal of the American Statistical Association.
+
+
+\newpage
+
+# Appendix
+
+```{r coeff, echo=F}
+a <- summary(m1)
+b <- summary(m2)
+c <- summary(m3)
+d <- summary(m4)
+e <- summary(m5)
+tab2 <- cbind(round(a$coefficients[,1],2), round(b$coefficients[,1],2),
+              round(c$coefficients[,1],2), round(d$coefficients[,1],2),
+              round(e$coefficients[,1],2))
+Models=c("Liberal","Conservative","Ndp",
+                        "Bloc","Others")
+tab2 <- rbind(Models,tab2)
+kable(tab2, 
+      caption = "Estimated Coefficients of 5 Models")
+```
+
